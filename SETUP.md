@@ -1,5 +1,9 @@
 # Guía de Instalación — Sistema Pico y Placa Pasto
 
+**Repositorio:** https://github.com/SantyR12/pico_y_placa_OpenALPR
+
+---
+
 ## Requisitos previos
 
 - **Python 3.10 o superior** → https://www.python.org/downloads/
@@ -13,61 +17,27 @@
 Abre una terminal (CMD o PowerShell) y ejecuta:
 
 ```bash
-git clone <URL_DEL_REPOSITORIO>
-cd <nombre-de-la-carpeta>
+git clone https://github.com/SantyR12/pico_y_placa_OpenALPR.git
+cd pico_y_placa_OpenALPR
 ```
 
 ---
 
-## Paso 2 — Descargar OpenALPR para Windows
+## Paso 2 — Instalar Visual C++ Runtime
 
-1. Descarga el archivo ZIP desde este enlace:
+Los binarios de OpenALPR ya vienen incluidos en el repo. Solo instala el runtime:
 
-```
-https://github.com/openalpr/openalpr/releases/download/v2.3.0/openalpr-2.3.0-win-64bit.zip
-```
+1. Abre la carpeta `openalpr_bin\openalpr_64\`
+2. Haz **doble clic** en `vc_redist.x64.exe`
+3. Dale a **Instalar**
 
-2. Extrae el ZIP dentro de la carpeta del proyecto de forma que quede así:
-
-```
-pico-y-placa/
-├── openalpr/               ← repo clonado (ya está)
-├── openalpr_bin/
-│   └── openalpr_64/        ← contenido del ZIP aquí
-│       ├── libopenalprpy.dll
-│       ├── openalpr.dll
-│       ├── openalpr.conf
-│       ├── runtime_data/
-│       └── ...
-├── pico_y_placa/
-└── ...
-```
-
-3. Entra a la carpeta `openalpr_bin\openalpr_64\` y **renombra** el archivo:
-
-```
-openalprpy.dll  →  libopenalprpy.dll
-```
-
-> Haz clic derecho → Cambiar nombre
+> Si aparece "ya está instalada otra versión", cierra y continúa al siguiente paso.
 
 ---
 
-## Paso 3 — Instalar Visual C++ Runtime
+## Paso 3 — Instalar dependencias Python
 
-Dentro de `openalpr_bin\openalpr_64\` haz **doble clic** en:
-
-```
-vc_redist.x64.exe
-```
-
-Dale a **Instalar**. Si aparece el mensaje "ya está instalada otra versión", cierra y continúa.
-
----
-
-## Paso 4 — Instalar dependencias Python
-
-Desde la terminal, dentro de la carpeta `pico_y_placa\`:
+Desde la terminal, entra a la carpeta `pico_y_placa\`:
 
 ```bash
 cd pico_y_placa
@@ -78,7 +48,7 @@ pip install -r requirements.txt
 
 ---
 
-## Paso 5 — Configurar API Key de Gemini
+## Paso 4 — Configurar API Key de Gemini
 
 1. Ve a https://aistudio.google.com/app/apikey
 2. Crea una cuenta gratuita y genera una API Key
@@ -89,7 +59,7 @@ pip install -r requirements.txt
 GEMINI_API_KEY = "TU_API_KEY_AQUI"
 ```
 
-Por tu key real, por ejemplo:
+Por tu key real:
 
 ```python
 GEMINI_API_KEY = "AIzaSyXXXXXXXXXXXXXXXXXXXXXXXXX"
@@ -97,7 +67,7 @@ GEMINI_API_KEY = "AIzaSyXXXXXXXXXXXXXXXXXXXXXXXXX"
 
 ---
 
-## Paso 6 — Ejecutar el sistema
+## Paso 5 — Ejecutar el sistema
 
 ```bash
 python main.py
@@ -109,7 +79,7 @@ En la terminal deberías ver:
 [detector] Motor activo: OpenALPR
 ```
 
-Si ves `Motor activo: EasyOCR (fallback)`, revisa que el Paso 2 y 3 estén completos.
+> Si ves `Motor activo: EasyOCR (fallback)` revisa que el Paso 2 esté completo.
 
 ---
 
@@ -127,23 +97,20 @@ Si ves `Motor activo: EasyOCR (fallback)`, revisa que el Paso 2 y 3 estén compl
 
 ---
 
-## Estructura de carpetas final
+## Estructura del proyecto
 
 ```
-pico-y-placa/
-├── openalpr/                  ← Repo OpenALPR (bindings Python)
-│   ├── src/bindings/python/
-│   └── runtime_data/
-├── openalpr_bin/              ← Binarios Windows del ZIP
+pico_y_placa_OpenALPR/
+├── openalpr/                  ← Submódulo: bindings Python de OpenALPR
+│   └── src/bindings/python/
+├── openalpr_bin/              ← Binarios Windows (DLLs incluidas en el repo)
 │   └── openalpr_64/
 │       ├── libopenalprpy.dll
 │       ├── openalpr.dll
-│       ├── liblept170.dll
-│       ├── opencv_world300.dll
 │       ├── openalpr.conf
 │       ├── runtime_data/
 │       └── vc_redist.x64.exe
-├── pico_y_placa/              ← Código del proyecto
+├── pico_y_placa/              ← Submódulo: código del proyecto
 │   ├── main.py
 │   ├── gui.py
 │   ├── detector.py
@@ -151,7 +118,7 @@ pico-y-placa/
 │   ├── assistant.py
 │   ├── holidays.py
 │   └── requirements.txt
-└── SETUP.md                   ← Esta guía
+└── SETUP.md
 ```
 
 ---
@@ -160,9 +127,8 @@ pico-y-placa/
 
 | Problema | Solución |
 |----------|----------|
-| `Motor activo: EasyOCR` en lugar de OpenALPR | Verifica que `libopenalprpy.dll` esté en `openalpr_bin/openalpr_64/` |
-| Error al instalar `openalpr` con pip | Normal, el sistema usa EasyOCR automáticamente |
+| `Motor activo: EasyOCR` en lugar de OpenALPR | Instala `vc_redist.x64.exe` del Paso 2 |
 | El chat no responde | Verifica tu API Key de Gemini en `assistant.py` |
 | `No module named 'cv2'` | Ejecuta `pip install opencv-python` |
 | `No se detectó ninguna webcam` | Usa el botón Imagen o Video en su lugar |
-| EasyOCR tarda al iniciar | Solo ocurre la primera vez, está descargando el modelo |
+| EasyOCR tarda al iniciar | Solo ocurre la primera vez, descarga el modelo (~100 MB) |
