@@ -4,12 +4,13 @@ Interfaz gráfica principal — Tkinter.
 Paneles:
   - Izquierdo : video en tiempo real con bbox sobre la placa
   - Derecho   : placa detectada + resultado pico y placa
-  - Inferior  : chat con asistente Gemini
+  - Inferior  : tabs → Chat (Gemini) | Historial de detecciones
 """
 
+import csv
 import threading
 import tkinter as tk
-from tkinter import filedialog, scrolledtext
+from tkinter import filedialog, scrolledtext, ttk
 from datetime import datetime
 
 import cv2
@@ -35,22 +36,26 @@ BTN_GREEN  = "#3a9e6f"
 BTN_ORANGE = "#d4813a"
 BTN_RED    = "#c0392b"
 BTN_PURPLE = "#7c5cbf"
+BTN_TEAL   = "#2a9d8f"
 
 DIAS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
 
-VIDEO_W = 640
-VIDEO_H = 400
+VIDEO_W      = 640
+VIDEO_H      = 400
+COOLDOWN_SEG = 5   # segundos antes de volver a registrar la misma placa
 
 
 class PicoPlacaApp:
     def __init__(self, root: tk.Tk):
-        self.root     = root
-        self.cap      = None
-        self.running  = False
-        self._ultimo  = {}
+        self.root      = root
+        self.cap       = None
+        self.running   = False
+        self._ultimo   = {}
+        self._historial: list[dict] = []
+        self._cooldown: dict[str, datetime] = {}
 
         self.root.title("Pico y Placa — Pasto, Colombia")
-        self.root.geometry("1020x730")
+        self.root.geometry("1020x800")
         self.root.configure(bg=BG_MAIN)
         self.root.resizable(False, False)
 
@@ -114,7 +119,6 @@ class PicoPlacaApp:
 
         tk.Label(pnl, text="─" * 34, bg=BG_PANEL, fg="#444466").pack(pady=8)
 
-        # Info par actual
         tk.Label(pnl, text="Par restringido hoy:",
                  bg=BG_PANEL, fg=FG_GRAY, font=("Arial", 9)).pack()
         self.lbl_par_actual = tk.Label(
@@ -145,24 +149,49 @@ class PicoPlacaApp:
         tk.Button(fila_btn, text="⏹  Detener", bg=BTN_RED,
                   command=self.detener,         **_btn).pack(side=tk.LEFT, padx=4)
 
-        # ── Panel chat ────────────────────────────────────────────────────────
-        pnl_chat = tk.Frame(self.root, bg=BG_PANEL)
-        pnl_chat.pack(fill=tk.BOTH, padx=10, pady=(0, 8))
+        # ── Panel inferior con tabs ───────────────────────────────────────────
+        self._construir_tabs()
 
+    # ── Tabs inferiores ───────────────────────────────────────────────────────
+    def _construir_tabs(self):
+        style = ttk.Style()
+        style.theme_use("default")
+        style.configure("Dark.TNotebook",
+                        background=BG_MAIN, borderwidth=0)
+        style.configure("Dark.TNotebook.Tab",
+                        background=BG_PANEL, foreground=FG_GRAY,
+                        padding=[12, 5], font=("Arial", 10, "bold"))
+        style.map("Dark.TNotebook.Tab",
+                  background=[("selected", BTN_BLUE)],
+                  foreground=[("selected", FG_WHITE)])
+
+        nb = ttk.Notebook(self.root, style="Dark.TNotebook")
+        nb.pack(fill=tk.BOTH, padx=10, pady=(0, 8), expand=True)
+
+        tab_chat = tk.Frame(nb, bg=BG_PANEL)
+        nb.add(tab_chat, text="💬  Chat Gemini")
+        self._construir_chat(tab_chat)
+
+        tab_hist = tk.Frame(nb, bg=BG_PANEL)
+        nb.add(tab_hist, text="📋  Historial")
+        self._construir_historial(tab_hist)
+
+    # ── Tab Chat ──────────────────────────────────────────────────────────────
+    def _construir_chat(self, parent):
         tk.Label(
-            pnl_chat, text="💬  Asistente Pico y Placa (Gemini)",
+            parent, text="💬  Asistente Pico y Placa (Gemini)",
             bg=BG_PANEL, fg=FG_GRAY, font=("Arial", 10, "bold")
         ).pack(anchor=tk.W, padx=10, pady=(8, 2))
 
         self.txt_chat = scrolledtext.ScrolledText(
-            pnl_chat, height=7,
+            parent, height=6,
             bg=BG_DARK, fg=FG_WHITE,
             font=("Arial", 10), state=tk.DISABLED,
             wrap=tk.WORD, insertbackground=FG_WHITE
         )
         self.txt_chat.pack(fill=tk.X, padx=10, pady=(0, 4))
 
-        fila_inp = tk.Frame(pnl_chat, bg=BG_PANEL)
+        fila_inp = tk.Frame(parent, bg=BG_PANEL)
         fila_inp.pack(fill=tk.X, padx=10, pady=(0, 8))
 
         self.ent_chat = tk.Entry(
@@ -187,6 +216,74 @@ class PicoPlacaApp:
             FG_GREEN
         )
 
+    # ── Tab Historial ─────────────────────────────────────────────────────────
+    def _construir_historial(self, parent):
+        # Barra superior: contador + botones
+        barra = tk.Frame(parent, bg=BG_PANEL)
+        barra.pack(fill=tk.X, padx=10, pady=(8, 4))
+
+        self.lbl_conteo = tk.Label(
+            barra, text="0 vehículos detectados",
+            bg=BG_PANEL, fg=FG_GRAY, font=("Arial", 10, "bold")
+        )
+        self.lbl_conteo.pack(side=tk.LEFT)
+
+        tk.Button(
+            barra, text="🗑  Limpiar", bg=BTN_RED, fg=FG_WHITE,
+            font=("Arial", 9, "bold"), bd=0, padx=10, pady=3,
+            cursor="hand2", command=self._limpiar_historial
+        ).pack(side=tk.RIGHT, padx=(4, 0))
+
+        tk.Button(
+            barra, text="💾  Exportar CSV", bg=BTN_TEAL, fg=FG_WHITE,
+            font=("Arial", 9, "bold"), bd=0, padx=10, pady=3,
+            cursor="hand2", command=self._exportar_csv
+        ).pack(side=tk.RIGHT, padx=(4, 0))
+
+        # Tabla (Treeview)
+        style = ttk.Style()
+        style.configure("Dark.Treeview",
+                        background=BG_DARK, foreground=FG_WHITE,
+                        fieldbackground=BG_DARK, rowheight=22,
+                        font=("Arial", 10))
+        style.configure("Dark.Treeview.Heading",
+                        background=BG_PANEL, foreground=FG_YELLOW,
+                        font=("Arial", 9, "bold"))
+        style.map("Dark.Treeview",
+                  background=[("selected", BTN_BLUE)],
+                  foreground=[("selected", FG_WHITE)])
+
+        frame_tree = tk.Frame(parent, bg=BG_DARK)
+        frame_tree.pack(fill=tk.BOTH, padx=10, pady=(0, 8), expand=True)
+
+        cols = ("hora", "placa", "estado", "digito", "motor", "confianza")
+        self.tree = ttk.Treeview(
+            frame_tree, columns=cols, show="headings",
+            style="Dark.Treeview", height=6
+        )
+
+        encabezados = {
+            "hora"      : ("Hora",       90),
+            "placa"     : ("Placa",      90),
+            "estado"    : ("Estado",    145),
+            "digito"    : ("Dígito",     65),
+            "motor"     : ("Motor",     100),
+            "confianza" : ("Confianza",  85),
+        }
+        for col, (texto, ancho) in encabezados.items():
+            self.tree.heading(col, text=texto)
+            self.tree.column(col, width=ancho, anchor=tk.CENTER)
+
+        scroll_y = ttk.Scrollbar(frame_tree, orient=tk.VERTICAL,
+                                 command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scroll_y.set)
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Tags de color por fila
+        self.tree.tag_configure("libre",       foreground=FG_GREEN)
+        self.tree.tag_configure("restringido", foreground=FG_RED)
+
     # ── Reloj ─────────────────────────────────────────────────────────────────
     def _actualizar_reloj(self):
         ahora = datetime.now()
@@ -194,7 +291,6 @@ class PicoPlacaApp:
         self.lbl_reloj.config(
             text=f"{dia} {ahora.strftime('%d/%m/%Y  %H:%M:%S')}"
         )
-        # Actualizar par restringido
         par = obtener_par_restringido(ahora.date())
         if par:
             self.lbl_par_actual.config(text=f"{par[0]}  –  {par[1]}")
@@ -225,15 +321,86 @@ class PicoPlacaApp:
         self.lbl_detalle.config(text="")
         self._ultimo = {}
 
+    # ── Registrar detección en historial ─────────────────────────────────────
+    def _registrar_deteccion(self, resultado: dict, verificacion: dict):
+        placa = resultado["placa"]
+        ahora = datetime.now()
+
+        # Anti-spam: ignorar si la misma placa se vio hace menos de COOLDOWN_SEG s
+        ultimo = self._cooldown.get(placa)
+        if ultimo and (ahora - ultimo).total_seconds() < COOLDOWN_SEG:
+            return
+
+        self._cooldown[placa] = ahora
+
+        estado_txt = "❌ RESTRICCIÓN" if verificacion["restringido"] else "✅ PUEDE CIRCULAR"
+        tag        = "restringido"    if verificacion["restringido"] else "libre"
+
+        fila = {
+            "hora"       : ahora.strftime("%H:%M:%S"),
+            "placa"      : placa,
+            "estado"     : estado_txt,
+            "digito"     : str(verificacion["digito"]),
+            "motor"      : resultado["motor"],
+            "confianza"  : f"{resultado['confianza']}%",
+            "restringido": verificacion["restringido"],
+        }
+        self._historial.append(fila)
+
+        # Insertar al inicio (más reciente arriba)
+        self.tree.insert(
+            "", 0,
+            values=(fila["hora"], fila["placa"], fila["estado"],
+                    fila["digito"], fila["motor"], fila["confianza"]),
+            tags=(tag,)
+        )
+
+        total = len(self._historial)
+        sufijo = "s" if total != 1 else ""
+        self.lbl_conteo.config(
+            text=f"{total} vehículo{sufijo} detectado{sufijo}"
+        )
+
+    # ── Exportar CSV ──────────────────────────────────────────────────────────
+    def _exportar_csv(self):
+        if not self._historial:
+            self._agregar_chat("Sistema", "No hay detecciones para exportar.", FG_YELLOW)
+            return
+
+        path = filedialog.asksaveasfilename(
+            title="Guardar historial",
+            defaultextension=".csv",
+            initialfile=f"pico_placa_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            filetypes=[("CSV", "*.csv"), ("Todos", "*.*")]
+        )
+        if not path:
+            return
+
+        campos = ["hora", "placa", "estado", "digito", "motor", "confianza"]
+        with open(path, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.DictWriter(f, fieldnames=campos, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(self._historial)
+
+        self._agregar_chat("Sistema", f"Historial exportado → {path}", FG_GREEN)
+
+    # ── Limpiar historial ─────────────────────────────────────────────────────
+    def _limpiar_historial(self):
+        self._historial.clear()
+        self._cooldown.clear()
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        self.lbl_conteo.config(text="0 vehículos detectados")
+
     # ── Procesar frame ────────────────────────────────────────────────────────
     def _procesar_frame(self, frame: np.ndarray):
         resultado = detectar_placa(frame)
 
         if resultado:
-            x, y, w, h    = resultado["bbox"]
-            fecha_hora     = datetime.now()
-            verificacion   = verificar(resultado["placa"], fecha_hora)
-            self._ultimo   = verificacion
+            x, y, w, h  = resultado["bbox"]
+            fecha_hora   = datetime.now()
+            verificacion = verificar(resultado["placa"], fecha_hora)
+            self._ultimo = verificacion
 
             color = (0, 0, 220) if verificacion["restringido"] else (0, 200, 80)
             cv2.rectangle(frame, (x, y), (x + w, y + h), color, 3)
@@ -243,7 +410,6 @@ class PicoPlacaApp:
                 cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2
             )
 
-            # Actualizar panel resultado
             self.lbl_placa.config(text=resultado["placa"])
 
             if verificacion["restringido"]:
@@ -262,6 +428,9 @@ class PicoPlacaApp:
                 f"Confianza      : {resultado['confianza']}%"
             )
             self.lbl_detalle.config(text=detalle)
+
+            # Registrar en historial (con cooldown anti-spam)
+            self._registrar_deteccion(resultado, verificacion)
 
         self._render_frame(frame)
 
@@ -294,7 +463,7 @@ class PicoPlacaApp:
         if path:
             frame = cv2.imread(path)
             if frame is not None:
-                self._limpiar_panel()   # resetear panel antes de cada imagen nueva
+                self._limpiar_panel()
                 self._procesar_frame(frame)
             else:
                 self._agregar_chat("Sistema", "No se pudo leer la imagen.", FG_RED)
