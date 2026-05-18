@@ -604,7 +604,7 @@ class PicoPlacaApp:
         contexto = {
             "dia"       : DIAS[ahora.weekday()],
             "fecha"     : ahora.strftime("%d/%m/%Y"),
-            "par_hoy"   : f"{par[0]}-{par[1]}" if par else "Sin restricción",
+            "par_hoy"   : f"{par[0]}-{par[1]}" if par and len(par) > 1 else "Sin restricción",
             "es_festivo": ahora.date() in FESTIVOS,
         }
         threading.Thread(
