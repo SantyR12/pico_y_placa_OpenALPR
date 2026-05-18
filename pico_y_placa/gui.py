@@ -526,7 +526,7 @@ class PicoPlacaApp:
             dia = DIAS[fecha_hora.weekday()]
             detalle = (
                 f"Último dígito : {verificacion['digito']}\n"
-                f"Par restringido: {par[0]}-{par[1] if par else 'N/A'}\n"
+                f"Par restringido: {f'{par[0]}-{par[1]}' if par else 'N/A'}\n"
                 f"Día            : {dia} {fecha_hora.strftime('%d/%m/%Y')}\n"
                 f"Horario        : 7:30 AM – 7:00 PM\n"
                 f"Motor OCR      : {resultado['motor']}\n"
