@@ -1,27 +1,3 @@
 # Sistema Pico y Placa — Pasto, Colombia
-# Instalar con: pip install -r requirements.txt
-
-# Detección de placas (motor principal — requiere DLL de OpenALPR instalada)
-openalpr
-
-# OCR fallback (pure Python, sin compilar C++)
-easyocr
-
-# Captura de video e imagen
-opencv-python
-
-# Asistente conversacional (nuevo SDK — reemplaza google-generativeai)
-google-genai
-
-# Renderizado de frames en Tkinter
-pillow
-
-# Detección de región de placa (mejora precisión del OCR)
-ultralytics
-huggingface_hub
-
-# Asistente local (sin API key) — requiere Ollama corriendo en el sistema
-ollama
-
-# Variables de entorno desde archivo .env
-python-dotenv
+# Solo usa la biblioteca estándar de Python + tkinter (incluido en Python)
+# No requiere dependencias externas

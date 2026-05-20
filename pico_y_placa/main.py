@@ -1,14 +1,4 @@
-"""
-Entry point del sistema Pico y Placa — Pasto, Colombia.
-
-Uso:
-    python main.py
-"""
-
 import tkinter as tk
-from dotenv import load_dotenv
-load_dotenv()
-
 from gui import PicoPlacaApp
 
 
