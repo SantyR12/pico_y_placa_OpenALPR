@@ -8,6 +8,7 @@ Paneles:
 """
 
 import csv
+import time
 import threading
 import tkinter as tk
 from tkinter import filedialog, scrolledtext, ttk
@@ -21,6 +22,7 @@ from detector import detectar_placa
 from pico_y_placa import verificar, obtener_par_restringido
 from holidays import FESTIVOS
 from assistant import preguntar, reiniciar_chat
+from multa import mostrar_multa
 
 # ── Paleta de colores ─────────────────────────────────────────────────────────
 BG_MAIN    = "#1e1e2e"
@@ -48,10 +50,13 @@ COOLDOWN_SEG = 5   # segundos antes de volver a registrar la misma placa
 class PicoPlacaApp:
     def __init__(self, root: tk.Tk):
         self.root      = root
-        self.cap       = None
-        self.running   = False
-        self._ultimo   = {}
+        self.cap            = None
+        self.running        = False
+        self._procesando    = False
+        self._ultimo        = {}
+        self._ultimo_result = None   # última detección para overlay bbox
         self._historial: list[dict] = []
+        self._multas:    list[dict] = []
         self._cooldown: dict[str, datetime] = {}
 
         self.root.title("Pico y Placa — Pasto, Colombia")
@@ -176,6 +181,10 @@ class PicoPlacaApp:
         nb.add(tab_hist, text="📋  Historial")
         self._construir_historial(tab_hist)
 
+        tab_multas = tk.Frame(nb, bg=BG_PANEL)
+        nb.add(tab_multas, text="📄  Multas")
+        self._construir_multas(tab_multas)
+
     # ── Tab Chat ──────────────────────────────────────────────────────────────
     def _construir_chat(self, parent):
         tk.Label(
@@ -284,6 +293,99 @@ class PicoPlacaApp:
         self.tree.tag_configure("libre",       foreground=FG_GREEN)
         self.tree.tag_configure("restringido", foreground=FG_RED)
 
+    # ── Tab Multas ────────────────────────────────────────────────────────────
+    def _construir_multas(self, parent):
+        barra = tk.Frame(parent, bg=BG_PANEL)
+        barra.pack(fill=tk.X, padx=10, pady=(8, 4))
+
+        self.lbl_conteo_multas = tk.Label(
+            barra, text="0 multas generadas",
+            bg=BG_PANEL, fg=FG_GRAY, font=("Arial", 10, "bold")
+        )
+        self.lbl_conteo_multas.pack(side=tk.LEFT)
+
+        tk.Button(
+            barra, text="🗑  Limpiar", bg=BTN_RED, fg=FG_WHITE,
+            font=("Arial", 9, "bold"), bd=0, padx=10, pady=3,
+            cursor="hand2", command=self._limpiar_multas
+        ).pack(side=tk.RIGHT, padx=(4, 0))
+
+        tk.Button(
+            barra, text="💾  Exportar CSV", bg=BTN_TEAL, fg=FG_WHITE,
+            font=("Arial", 9, "bold"), bd=0, padx=10, pady=3,
+            cursor="hand2", command=self._exportar_multas_csv
+        ).pack(side=tk.RIGHT, padx=(4, 0))
+
+        frame_tree = tk.Frame(parent, bg=BG_DARK)
+        frame_tree.pack(fill=tk.BOTH, padx=10, pady=(0, 8), expand=True)
+
+        cols = ("hora", "nombre", "placa", "monto")
+        self.tree_multas = ttk.Treeview(
+            frame_tree, columns=cols, show="headings",
+            style="Dark.Treeview", height=6
+        )
+
+        encabezados = {
+            "hora"   : ("Hora",      90),
+            "nombre" : ("Infractor", 230),
+            "placa"  : ("Placa",     100),
+            "monto"  : ("Monto",     110),
+        }
+        for col, (texto, ancho) in encabezados.items():
+            self.tree_multas.heading(col, text=texto)
+            self.tree_multas.column(col, width=ancho, anchor=tk.CENTER)
+
+        scroll_y = ttk.Scrollbar(frame_tree, orient=tk.VERTICAL,
+                                 command=self.tree_multas.yview)
+        self.tree_multas.configure(yscrollcommand=scroll_y.set)
+        self.tree_multas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.tree_multas.tag_configure("multa", foreground=FG_RED)
+
+    def _agregar_multa_tabla(self, nombre: str, placa: str, fecha_hora: datetime):
+        monto_txt = "$ {:,}".format(633_200).replace(",", ".")
+        fila = {
+            "hora"  : fecha_hora.strftime("%H:%M:%S"),
+            "nombre": nombre,
+            "placa" : placa,
+            "monto" : monto_txt,
+        }
+        self._multas.append(fila)
+        self.tree_multas.insert(
+            "", 0,
+            values=(fila["hora"], fila["nombre"], fila["placa"], fila["monto"]),
+            tags=("multa",)
+        )
+        total  = len(self._multas)
+        sufijo = "s" if total != 1 else ""
+        self.lbl_conteo_multas.config(text=f"{total} multa{sufijo} generada{sufijo}")
+
+    def _limpiar_multas(self):
+        self._multas.clear()
+        for item in self.tree_multas.get_children():
+            self.tree_multas.delete(item)
+        self.lbl_conteo_multas.config(text="0 multas generadas")
+
+    def _exportar_multas_csv(self):
+        if not self._multas:
+            self._agregar_chat("Sistema", "No hay multas para exportar.", FG_YELLOW)
+            return
+        path = filedialog.asksaveasfilename(
+            title="Guardar multas",
+            defaultextension=".csv",
+            initialfile=f"multas_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            filetypes=[("CSV", "*.csv"), ("Todos", "*.*")]
+        )
+        if not path:
+            return
+        campos = ["hora", "nombre", "placa", "monto"]
+        with open(path, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.DictWriter(f, fieldnames=campos, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(self._multas)
+        self._agregar_chat("Sistema", f"Multas exportadas → {path}", FG_GREEN)
+
     # ── Reloj ─────────────────────────────────────────────────────────────────
     def _actualizar_reloj(self):
         ahora = datetime.now()
@@ -308,18 +410,22 @@ class PicoPlacaApp:
 
     # ── Renderizar frame ──────────────────────────────────────────────────────
     def _render_frame(self, frame: np.ndarray):
-        rgb   = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        img   = Image.fromarray(rgb).resize((VIDEO_W, VIDEO_H), Image.LANCZOS)
-        imgtk = ImageTk.PhotoImage(image=img)
-        self.lbl_video.imgtk = imgtk
-        self.lbl_video.config(image=imgtk)
+        try:
+            rgb   = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            img   = Image.fromarray(rgb).resize((VIDEO_W, VIDEO_H), Image.LANCZOS)
+            imgtk = ImageTk.PhotoImage(image=img)
+            self.lbl_video.imgtk = imgtk
+            self.lbl_video.config(image=imgtk)
+        except Exception as e:
+            print(f"[render] ERROR: {e}")
 
     # ── Limpiar panel resultado ───────────────────────────────────────────────
     def _limpiar_panel(self):
         self.lbl_placa.config(text="---")
         self.lbl_estado.config(text="Sin placa detectada", fg=FG_GRAY)
         self.lbl_detalle.config(text="")
-        self._ultimo = {}
+        self._ultimo        = {}
+        self._ultimo_result = None
 
     # ── Registrar detección en historial ─────────────────────────────────────
     def _registrar_deteccion(self, resultado: dict, verificacion: dict):
@@ -361,6 +467,12 @@ class PicoPlacaApp:
             text=f"{total} vehículo{sufijo} detectado{sufijo}"
         )
 
+        if verificacion["restringido"]:
+            self.root.after(
+                0, mostrar_multa, self.root, placa, ahora,
+                self._agregar_multa_tabla
+            )
+
     # ── Exportar CSV ──────────────────────────────────────────────────────────
     def _exportar_csv(self):
         if not self._historial:
@@ -392,57 +504,76 @@ class PicoPlacaApp:
             self.tree.delete(item)
         self.lbl_conteo.config(text="0 vehículos detectados")
 
-    # ── Procesar frame ────────────────────────────────────────────────────────
-    def _procesar_frame(self, frame: np.ndarray):
-        resultado = detectar_placa(frame)
-
-        if resultado:
-            x, y, w, h  = resultado["bbox"]
-            fecha_hora   = datetime.now()
-            verificacion = verificar(resultado["placa"], fecha_hora)
-            self._ultimo = verificacion
-
-            color = (0, 0, 220) if verificacion["restringido"] else (0, 200, 80)
-            cv2.rectangle(frame, (x, y), (x + w, y + h), color, 3)
-            cv2.putText(
-                frame, resultado["placa"],
-                (x, max(y - 12, 20)),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2
-            )
-
-            self.lbl_placa.config(text=resultado["placa"])
-
-            if verificacion["restringido"]:
-                self.lbl_estado.config(text="❌  RESTRICCIÓN ACTIVA", fg=FG_RED)
-            else:
-                self.lbl_estado.config(text="✅  PUEDE CIRCULAR", fg=FG_GREEN)
-
-            par = verificacion["par_hoy"]
-            dia = DIAS[fecha_hora.weekday()]
-            detalle = (
-                f"Último dígito : {verificacion['digito']}\n"
-                f"Par restringido: {par[0]}-{par[1] if par else 'N/A'}\n"
-                f"Día            : {dia} {fecha_hora.strftime('%d/%m/%Y')}\n"
-                f"Horario        : 7:30 AM – 7:00 PM\n"
-                f"Motor OCR      : {resultado['motor']}\n"
-                f"Confianza      : {resultado['confianza']}%"
-            )
-            self.lbl_detalle.config(text=detalle)
-
-            # Registrar en historial (con cooldown anti-spam)
-            self._registrar_deteccion(resultado, verificacion)
-
-        self._render_frame(frame)
-
     # ── Loop de video ─────────────────────────────────────────────────────────
     def _loop_video(self):
         while self.running and self.cap and self.cap.isOpened():
             ret, frame = self.cap.read()
             if not ret:
                 break
-            self.root.after(0, self._procesar_frame, frame)
-            cv2.waitKey(30)
+
+            # Dibujar bbox de la última detección sobre el frame actual
+            if self._ultimo_result:
+                x, y, w, h = self._ultimo_result["bbox"]
+                color = (0, 0, 220) if self._ultimo.get("restringido") else (0, 200, 80)
+                cv2.rectangle(frame, (x, y), (x + w, y + h), color, 3)
+                cv2.putText(
+                    frame, self._ultimo_result["placa"],
+                    (x, max(y - 12, 20)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2
+                )
+
+            # Siempre actualizar el video (no bloquea el hilo principal)
+            self.root.after(0, self._render_frame, frame)
+
+            # Lanzar detección en hilo de fondo solo si no hay una activa
+            if not self._procesando:
+                self._procesando = True
+                threading.Thread(
+                    target=self._detectar_frame,
+                    args=(frame.copy(),),
+                    daemon=True
+                ).start()
+
+            time.sleep(0.03)
         self.running = False
+
+    # ── Detección en hilo de fondo ────────────────────────────────────────────
+    def _detectar_frame(self, frame: np.ndarray):
+        try:
+            resultado = detectar_placa(frame)
+            if resultado:
+                self.root.after(0, self._aplicar_resultado, resultado)
+        except Exception as e:
+            print(f"[gui] Error en detección: {e}")
+        finally:
+            self._procesando = False
+
+    # ── Actualizar UI tras detección (hilo principal) ─────────────────────────
+    def _aplicar_resultado(self, resultado: dict):
+        fecha_hora   = datetime.now()
+        verificacion = verificar(resultado["placa"], fecha_hora)
+        self._ultimo        = verificacion
+        self._ultimo_result = resultado
+
+        self.lbl_placa.config(text=resultado["placa"])
+
+        if verificacion["restringido"]:
+            self.lbl_estado.config(text="❌  RESTRICCIÓN ACTIVA", fg=FG_RED)
+        else:
+            self.lbl_estado.config(text="✅  PUEDE CIRCULAR", fg=FG_GREEN)
+
+        par = verificacion["par_hoy"]
+        dia = DIAS[fecha_hora.weekday()]
+        detalle = (
+            f"Último dígito : {verificacion['digito']}\n"
+            f"Par restringido: {f'{par[0]}-{par[1]}' if par else 'N/A'}\n"
+            f"Día            : {dia} {fecha_hora.strftime('%d/%m/%Y')}\n"
+            f"Horario        : 7:30 AM – 7:00 PM\n"
+            f"Motor OCR      : {resultado['motor']}\n"
+            f"Confianza      : {resultado['confianza']}%"
+        )
+        self.lbl_detalle.config(text=detalle)
+        self._registrar_deteccion(resultado, verificacion)
 
     # ── Controles de fuente ───────────────────────────────────────────────────
     def iniciar_webcam(self):
@@ -464,7 +595,12 @@ class PicoPlacaApp:
             frame = cv2.imread(path)
             if frame is not None:
                 self._limpiar_panel()
-                self._procesar_frame(frame)
+                self._render_frame(frame)
+                threading.Thread(
+                    target=self._detectar_frame,
+                    args=(frame,),
+                    daemon=True
+                ).start()
             else:
                 self._agregar_chat("Sistema", "No se pudo leer la imagen.", FG_RED)
 
@@ -499,9 +635,14 @@ class PicoPlacaApp:
         contexto = {
             "dia"       : DIAS[ahora.weekday()],
             "fecha"     : ahora.strftime("%d/%m/%Y"),
-            "par_hoy"   : f"{par[0]}-{par[1]}" if par else "Sin restricción",
+            "par_hoy"   : f"{par[0]}-{par[1]}" if par and len(par) > 1 else "Sin restricción",
             "es_festivo": ahora.date() in FESTIVOS,
         }
+        # Si hay una placa detectada activa, agregarla al contexto
+        if self._ultimo:
+            contexto["placa_detectada"] = self.lbl_placa.cget("text")
+            contexto["digito"]          = self._ultimo.get("digito")
+            contexto["restringido"]     = self._ultimo.get("restringido")
         threading.Thread(
             target=self._responder_gemini,
             args=(mensaje, contexto),

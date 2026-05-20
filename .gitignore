@@ -26,3 +26,20 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Variables de entorno (contienen claves privadas)
+.env
+
+# Configuración local del editor
+.claude/
+
+# Documentos internos de planificación (no parte del proyecto)
+docs/
+
+# Checkpoints automáticos de Jupyter
+.ipynb_checkpoints/
+
+# Imágenes generadas por el notebook (se regeneran al ejecutar)
+arquitecturas_ia.png
+preprocesamiento.png
+rotacion_semanal.png
