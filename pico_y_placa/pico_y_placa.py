@@ -72,7 +72,7 @@ def verificar(placa: str, fecha_hora: datetime) -> dict:
             "en_horario" : False,
         }
 
-    digito     = int(placa_limpia[-1])
+    digito     = int(digitos[-1])
     fecha      = fecha_hora.date()
     hora_actual = fecha_hora.time()
     dia_semana = fecha.weekday()   # 0=lunes … 6=domingo
