@@ -302,5 +302,7 @@ def detectar_placa(frame: np.ndarray) -> dict | None:
     Retorna None si no se detecta ninguna placa.
     """
     if _OPENALPR_OK:
-        return _detectar_openalpr(frame)
+        resultado = _detectar_openalpr(frame)
+        if resultado:
+            return resultado
     return _detectar_easyocr(frame)

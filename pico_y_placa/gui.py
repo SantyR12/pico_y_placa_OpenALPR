@@ -8,6 +8,7 @@ Paneles:
 """
 
 import csv
+import time
 import threading
 import tkinter as tk
 from tkinter import filedialog, scrolledtext, ttk
@@ -49,9 +50,11 @@ COOLDOWN_SEG = 5   # segundos antes de volver a registrar la misma placa
 class PicoPlacaApp:
     def __init__(self, root: tk.Tk):
         self.root      = root
-        self.cap       = None
-        self.running   = False
-        self._ultimo   = {}
+        self.cap            = None
+        self.running        = False
+        self._procesando    = False
+        self._ultimo        = {}
+        self._ultimo_result = None   # última detección para overlay bbox
         self._historial: list[dict] = []
         self._multas:    list[dict] = []
         self._cooldown: dict[str, datetime] = {}
@@ -407,18 +410,22 @@ class PicoPlacaApp:
 
     # ── Renderizar frame ──────────────────────────────────────────────────────
     def _render_frame(self, frame: np.ndarray):
-        rgb   = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        img   = Image.fromarray(rgb).resize((VIDEO_W, VIDEO_H), Image.LANCZOS)
-        imgtk = ImageTk.PhotoImage(image=img)
-        self.lbl_video.imgtk = imgtk
-        self.lbl_video.config(image=imgtk)
+        try:
+            rgb   = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            img   = Image.fromarray(rgb).resize((VIDEO_W, VIDEO_H), Image.LANCZOS)
+            imgtk = ImageTk.PhotoImage(image=img)
+            self.lbl_video.imgtk = imgtk
+            self.lbl_video.config(image=imgtk)
+        except Exception as e:
+            print(f"[render] ERROR: {e}")
 
     # ── Limpiar panel resultado ───────────────────────────────────────────────
     def _limpiar_panel(self):
         self.lbl_placa.config(text="---")
         self.lbl_estado.config(text="Sin placa detectada", fg=FG_GRAY)
         self.lbl_detalle.config(text="")
-        self._ultimo = {}
+        self._ultimo        = {}
+        self._ultimo_result = None
 
     # ── Registrar detección en historial ─────────────────────────────────────
     def _registrar_deteccion(self, resultado: dict, verificacion: dict):
@@ -497,57 +504,76 @@ class PicoPlacaApp:
             self.tree.delete(item)
         self.lbl_conteo.config(text="0 vehículos detectados")
 
-    # ── Procesar frame ────────────────────────────────────────────────────────
-    def _procesar_frame(self, frame: np.ndarray):
-        resultado = detectar_placa(frame)
-
-        if resultado:
-            x, y, w, h  = resultado["bbox"]
-            fecha_hora   = datetime.now()
-            verificacion = verificar(resultado["placa"], fecha_hora)
-            self._ultimo = verificacion
-
-            color = (0, 0, 220) if verificacion["restringido"] else (0, 200, 80)
-            cv2.rectangle(frame, (x, y), (x + w, y + h), color, 3)
-            cv2.putText(
-                frame, resultado["placa"],
-                (x, max(y - 12, 20)),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2
-            )
-
-            self.lbl_placa.config(text=resultado["placa"])
-
-            if verificacion["restringido"]:
-                self.lbl_estado.config(text="❌  RESTRICCIÓN ACTIVA", fg=FG_RED)
-            else:
-                self.lbl_estado.config(text="✅  PUEDE CIRCULAR", fg=FG_GREEN)
-
-            par = verificacion["par_hoy"]
-            dia = DIAS[fecha_hora.weekday()]
-            detalle = (
-                f"Último dígito : {verificacion['digito']}\n"
-                f"Par restringido: {f'{par[0]}-{par[1]}' if par else 'N/A'}\n"
-                f"Día            : {dia} {fecha_hora.strftime('%d/%m/%Y')}\n"
-                f"Horario        : 7:30 AM – 7:00 PM\n"
-                f"Motor OCR      : {resultado['motor']}\n"
-                f"Confianza      : {resultado['confianza']}%"
-            )
-            self.lbl_detalle.config(text=detalle)
-
-            # Registrar en historial (con cooldown anti-spam)
-            self._registrar_deteccion(resultado, verificacion)
-
-        self._render_frame(frame)
-
     # ── Loop de video ─────────────────────────────────────────────────────────
     def _loop_video(self):
         while self.running and self.cap and self.cap.isOpened():
             ret, frame = self.cap.read()
             if not ret:
                 break
-            self.root.after(0, self._procesar_frame, frame)
-            cv2.waitKey(30)
+
+            # Dibujar bbox de la última detección sobre el frame actual
+            if self._ultimo_result:
+                x, y, w, h = self._ultimo_result["bbox"]
+                color = (0, 0, 220) if self._ultimo.get("restringido") else (0, 200, 80)
+                cv2.rectangle(frame, (x, y), (x + w, y + h), color, 3)
+                cv2.putText(
+                    frame, self._ultimo_result["placa"],
+                    (x, max(y - 12, 20)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2
+                )
+
+            # Siempre actualizar el video (no bloquea el hilo principal)
+            self.root.after(0, self._render_frame, frame)
+
+            # Lanzar detección en hilo de fondo solo si no hay una activa
+            if not self._procesando:
+                self._procesando = True
+                threading.Thread(
+                    target=self._detectar_frame,
+                    args=(frame.copy(),),
+                    daemon=True
+                ).start()
+
+            time.sleep(0.03)
         self.running = False
+
+    # ── Detección en hilo de fondo ────────────────────────────────────────────
+    def _detectar_frame(self, frame: np.ndarray):
+        try:
+            resultado = detectar_placa(frame)
+            if resultado:
+                self.root.after(0, self._aplicar_resultado, resultado)
+        except Exception as e:
+            print(f"[gui] Error en detección: {e}")
+        finally:
+            self._procesando = False
+
+    # ── Actualizar UI tras detección (hilo principal) ─────────────────────────
+    def _aplicar_resultado(self, resultado: dict):
+        fecha_hora   = datetime.now()
+        verificacion = verificar(resultado["placa"], fecha_hora)
+        self._ultimo        = verificacion
+        self._ultimo_result = resultado
+
+        self.lbl_placa.config(text=resultado["placa"])
+
+        if verificacion["restringido"]:
+            self.lbl_estado.config(text="❌  RESTRICCIÓN ACTIVA", fg=FG_RED)
+        else:
+            self.lbl_estado.config(text="✅  PUEDE CIRCULAR", fg=FG_GREEN)
+
+        par = verificacion["par_hoy"]
+        dia = DIAS[fecha_hora.weekday()]
+        detalle = (
+            f"Último dígito : {verificacion['digito']}\n"
+            f"Par restringido: {f'{par[0]}-{par[1]}' if par else 'N/A'}\n"
+            f"Día            : {dia} {fecha_hora.strftime('%d/%m/%Y')}\n"
+            f"Horario        : 7:30 AM – 7:00 PM\n"
+            f"Motor OCR      : {resultado['motor']}\n"
+            f"Confianza      : {resultado['confianza']}%"
+        )
+        self.lbl_detalle.config(text=detalle)
+        self._registrar_deteccion(resultado, verificacion)
 
     # ── Controles de fuente ───────────────────────────────────────────────────
     def iniciar_webcam(self):
@@ -569,7 +595,12 @@ class PicoPlacaApp:
             frame = cv2.imread(path)
             if frame is not None:
                 self._limpiar_panel()
-                self._procesar_frame(frame)
+                self._render_frame(frame)
+                threading.Thread(
+                    target=self._detectar_frame,
+                    args=(frame,),
+                    daemon=True
+                ).start()
             else:
                 self._agregar_chat("Sistema", "No se pudo leer la imagen.", FG_RED)
 
