@@ -607,6 +607,11 @@ class PicoPlacaApp:
             "par_hoy"   : f"{par[0]}-{par[1]}" if par and len(par) > 1 else "Sin restricción",
             "es_festivo": ahora.date() in FESTIVOS,
         }
+        # Si hay una placa detectada activa, agregarla al contexto
+        if self._ultimo:
+            contexto["placa_detectada"] = self.lbl_placa.cget("text")
+            contexto["digito"]          = self._ultimo.get("digito")
+            contexto["restringido"]     = self._ultimo.get("restringido")
         threading.Thread(
             target=self._responder_gemini,
             args=(mensaje, contexto),

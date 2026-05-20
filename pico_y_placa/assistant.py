@@ -1,21 +1,21 @@
 """
 Módulo del asistente conversacional.
 
-Usa Google Gemini (nuevo SDK google-genai) para responder preguntas
-sobre el Pico y Placa de Pasto, Colombia.
-Rechaza amablemente preguntas fuera del dominio.
+Motor principal : Ollama (local, sin API key) — llama3.2:3b
+Motor fallback  : Google Gemini Flash (requiere GEMINI_API_KEY)
+
+El motor local arranca automáticamente si Ollama está corriendo.
+Si falla, cae a Gemini. Si ambos fallan, devuelve mensaje de error.
 """
 
-from google import genai
-from google.genai.types import GenerateContentConfig
+# ── Configuración ─────────────────────────────────────────────────────────────
+import os
 
-# ── API Key ───────────────────────────────────────────────────────────────────
-# Reemplaza este valor con tu API Key de Google AI Studio:
-# https://aistudio.google.com/app/apikey
-GEMINI_API_KEY = "AIzaSyDHD_iLBMyjCQUQXQMkSJvJC4tBvyTelXY"
+OLLAMA_MODEL   = "llama3.2:3b"
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_MODEL   = "gemini-2.5-flash"
 
-# ── System prompt ─────────────────────────────────────────────────────────────
+# ── System prompt (compartido por ambos motores) ──────────────────────────────
 _SYSTEM_PROMPT = """
 Eres un asistente experto en el sistema de Pico y Placa de la ciudad de
 Pasto, Nariño, Colombia.
@@ -40,64 +40,118 @@ Reglas técnicas del Pico y Placa en Pasto:
 - Horario: 7:30 AM a 7:00 PM
 - Días hábiles únicamente (lunes a viernes, sin festivos)
 
-Responde siempre en español, de forma clara y concisa.
+Responde siempre en español, de forma clara y concisa. Máximo 3 oraciones.
 """.strip()
 
-# ── Cliente y sesión de chat (inicialización lazy) ────────────────────────────
-_client       = None
-_chat_session = None
+# ── Estado interno ────────────────────────────────────────────────────────────
+_historial: list[dict] = []   # para Ollama (chat con memoria)
+_gemini_chat = None           # sesión Gemini (lazy)
+_motor_activo = None          # "ollama" | "gemini" | None
 
 
-def _get_chat() -> object:
-    """Inicializa el cliente y la sesión de chat la primera vez que se necesita."""
-    global _client, _chat_session
-    if _chat_session is None:
-        _client = genai.Client(api_key=GEMINI_API_KEY)
-        _chat_session = _client.chats.create(
+def _construir_mensaje(mensaje: str, contexto: dict) -> str:
+    festivo_txt = "Hoy es festivo, no hay restricción." \
+                  if contexto.get("es_festivo") else "Hoy no es festivo."
+
+    ctx = (
+        f"\n[Contexto del sistema — {contexto.get('dia', '')}, "
+        f"{contexto.get('fecha', '')}: "
+        f"par restringido hoy = {contexto.get('par_hoy', 'N/A')}. "
+        f"{festivo_txt}"
+    )
+
+    # Si hay una placa detectada activa, inyectar el resultado ya calculado
+    # para que el modelo explique en lugar de calcular (evita errores de razonamiento)
+    placa  = contexto.get("placa_detectada")
+    digito = contexto.get("digito")
+    if placa and digito is not None:
+        estado = "TIENE RESTRICCIÓN ACTIVA y NO puede circular" \
+                 if contexto.get("restringido") else "PUEDE circular sin restricción"
+        ctx += (
+            f" Placa detectada actualmente: {placa} "
+            f"(último dígito: {digito}). "
+            f"Esta placa {estado} hoy."
+        )
+
+    ctx += "]"
+    return mensaje + ctx
+
+
+# ── Motor 1: Ollama (local) ───────────────────────────────────────────────────
+def _preguntar_ollama(mensaje_con_ctx: str) -> str:
+    import ollama
+
+    _historial.append({"role": "user", "content": mensaje_con_ctx})
+    respuesta = ollama.chat(
+        model=OLLAMA_MODEL,
+        messages=[{"role": "system", "content": _SYSTEM_PROMPT}] + _historial,
+    )
+    texto = respuesta.message.content.strip()
+    _historial.append({"role": "assistant", "content": texto})
+    return texto
+
+
+# ── Motor 2: Gemini (fallback) ────────────────────────────────────────────────
+def _get_gemini_chat():
+    global _gemini_chat
+    if _gemini_chat is None:
+        from google import genai
+        from google.genai.types import GenerateContentConfig
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        _gemini_chat = client.chats.create(
             model=GEMINI_MODEL,
             config=GenerateContentConfig(system_instruction=_SYSTEM_PROMPT),
         )
-    return _chat_session
+    return _gemini_chat
+
+
+def _preguntar_gemini(mensaje_con_ctx: str) -> str:
+    chat = _get_gemini_chat()
+    return chat.send_message(mensaje_con_ctx).text.strip()
 
 
 # ── API pública ───────────────────────────────────────────────────────────────
 def preguntar(mensaje: str, contexto: dict) -> str:
     """
-    Envía un mensaje al asistente Gemini con contexto de fecha/hora actual.
+    Envía un mensaje al asistente con contexto de fecha/hora actual.
 
-    Parámetros:
-        mensaje  -- texto del usuario
-        contexto -- dict con claves:
-                    'dia'        str   ej: 'Viernes'
-                    'fecha'      str   ej: '08/05/2026'
-                    'par_hoy'    str   ej: '6-7'
-                    'es_festivo' bool
-
-    Retorna la respuesta del asistente como string.
+    Intenta Ollama primero (local, sin API key).
+    Si falla, usa Gemini como respaldo.
     """
-    festivo_txt = "Hoy es festivo, no hay restricción." \
-                  if contexto.get("es_festivo") else "Hoy no es festivo."
+    global _motor_activo
+    msg = _construir_mensaje(mensaje, contexto)
 
-    contexto_str = (
-        f"\n[Contexto del sistema — {contexto.get('dia', '')}, "
-        f"{contexto.get('fecha', '')}: "
-        f"par restringido hoy = {contexto.get('par_hoy', 'N/A')}. "
-        f"{festivo_txt}]"
-    )
-
+    # ── Intento 1: Ollama ─────────────────────────────────────────────────────
     try:
-        chat     = _get_chat()
-        respuesta = chat.send_message(mensaje + contexto_str)
-        return respuesta.text.strip()
-    except Exception as e:
+        respuesta = _preguntar_ollama(msg)
+        if _motor_activo != "ollama":
+            _motor_activo = "ollama"
+            print("[asistente] Motor activo: Ollama (local)")
+        return respuesta
+    except Exception as e_ollama:
+        print(f"[asistente] Ollama no disponible ({e_ollama}), usando Gemini…")
+        # Limpiar historial de ollama para no contaminar el siguiente intento
+        if _historial:
+            _historial.pop()
+
+    # ── Intento 2: Gemini ─────────────────────────────────────────────────────
+    try:
+        respuesta = _preguntar_gemini(msg)
+        if _motor_activo != "gemini":
+            _motor_activo = "gemini"
+            print("[asistente] Motor activo: Gemini Flash")
+        return respuesta
+    except Exception as e_gemini:
         return (
-            f"No pude conectarme con el asistente.\n"
-            f"Error: {e}\n\n"
-            f"Verifica que tu API Key de Gemini sea válida en assistant.py."
+            "No pude conectarme con ningún motor de IA.\n"
+            f"• Ollama: asegúrate de que el servicio esté corriendo (`ollama serve`).\n"
+            f"• Gemini: verifica la API Key en assistant.py.\n"
+            f"Error Gemini: {e_gemini}"
         )
 
 
 def reiniciar_chat():
-    """Limpia el historial de conversación iniciando una nueva sesión."""
-    global _chat_session
-    _chat_session = None
+    """Limpia el historial de conversación de ambos motores."""
+    global _historial, _gemini_chat
+    _historial.clear()
+    _gemini_chat = None

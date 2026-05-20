@@ -15,3 +15,13 @@ google-genai
 
 # Renderizado de frames en Tkinter
 pillow
+
+# Detección de región de placa (mejora precisión del OCR)
+ultralytics
+huggingface_hub
+
+# Asistente local (sin API key) — requiere Ollama corriendo en el sistema
+ollama
+
+# Variables de entorno desde archivo .env
+python-dotenv
